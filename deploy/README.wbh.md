@@ -13,9 +13,9 @@ docker login --username=<USER> <REG>
 ```bash
 REPO=<REG>/uaigc/sub2api
 TAG=0.0.2            # 每次发布改成新版本号
-docker build -t "$REPO:$TAG" -t "$REPO:latest" .
+docker build -t "$REPO:$TAG" -t "$REPO":latest .
 docker push "$REPO:$TAG"
-docker push "$REPO:latest"
+docker push "$REPO":latest
 ```
 
 > 注意：`latest` 的含义是「最近一次发布的 tag」，不是 git 历史上数值最大的版本。
