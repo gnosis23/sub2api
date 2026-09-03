@@ -603,6 +603,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
+	forwardBody, forwardContentType, err = ensureOpenAIImagesResponseFormat(forwardBody, forwardContentType)
+	if err != nil {
+		return nil, err
+	}
 	// 生图是长耗时、上游侧已产生实际成本的操作：客户端中途断开不应连带取消上游请求。
 	// detachStreamUpstreamContext 在非流式时原样返回请求 context，于是客户端一断开
 	// 就把已经在出图的上游调用打断成 context canceled，网关记 502、不扣费，而上游那边
@@ -818,6 +822,71 @@ func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]
 	rewritten, err := sjson.SetBytes(body, "model", model)
 	if err != nil {
 		return nil, "", fmt.Errorf("rewrite image request model: %w", err)
+	}
+	return rewritten, contentType, nil
+}
+
+// ensureOpenAIImagesResponseFormat makes the API-Key images request explicit
+// for upstreams that require response_format to return image bytes. A client
+// supplied value always wins.
+func ensureOpenAIImagesResponseFormat(body []byte, contentType string) ([]byte, string, error) {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
+		_, params, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse multipart content-type: %w", err)
+		}
+		boundary := strings.TrimSpace(params["boundary"])
+		if boundary == "" {
+			return nil, "", fmt.Errorf("multipart boundary is required")
+		}
+
+		reader := multipart.NewReader(bytes.NewReader(body), boundary)
+		var buffer bytes.Buffer
+		writer := multipart.NewWriter(&buffer)
+		responseFormatWritten := false
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, "", fmt.Errorf("read multipart body: %w", err)
+			}
+			target, err := writer.CreatePart(cloneMultipartHeader(part.Header))
+			if err != nil {
+				_ = part.Close()
+				return nil, "", fmt.Errorf("create multipart part: %w", err)
+			}
+			if strings.TrimSpace(part.FormName()) == "response_format" && part.FileName() == "" {
+				responseFormatWritten = true
+			}
+			if _, err := io.Copy(target, part); err != nil {
+				_ = part.Close()
+				return nil, "", fmt.Errorf("copy multipart part: %w", err)
+			}
+			_ = part.Close()
+		}
+		if !responseFormatWritten {
+			if err := writer.WriteField("response_format", "b64_json"); err != nil {
+				return nil, "", fmt.Errorf("append multipart response_format field: %w", err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			return nil, "", fmt.Errorf("finalize multipart body: %w", err)
+		}
+		return buffer.Bytes(), writer.FormDataContentType(), nil
+	}
+	if !gjson.ValidBytes(body) {
+		return nil, "", fmt.Errorf("failed to parse request body")
+	}
+	responseFormat := gjson.GetBytes(body, "response_format")
+	if responseFormat.Exists() && responseFormat.Type == gjson.String && strings.TrimSpace(responseFormat.String()) != "" {
+		return body, contentType, nil
+	}
+	rewritten, err := sjson.SetBytes(body, "response_format", "b64_json")
+	if err != nil {
+		return nil, "", fmt.Errorf("add image response_format: %w", err)
 	}
 	return rewritten, contentType, nil
 }

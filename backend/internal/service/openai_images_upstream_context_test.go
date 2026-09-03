@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -60,6 +61,24 @@ func openAIImagesJSONResponse() *http.Response {
 		Body: io.NopCloser(strings.NewReader(
 			`{"created":1710000000,"data":[{"b64_json":"aGVsbG8="}],"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`,
 		)),
+	}
+}
+
+func TestEnsureOpenAIImagesResponseFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "json missing", body: `{"model":"gpt-image-2"}`, want: "b64_json"},
+		{name: "json explicit", body: `{"response_format":"url"}`, want: "url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, err := ensureOpenAIImagesResponseFormat([]byte(tt.body), "application/json")
+			require.NoError(t, err)
+			require.Equal(t, tt.want, gjson.GetBytes(got, "response_format").String())
+		})
 	}
 }
 
